@@ -103,7 +103,15 @@ Notes extracted: 62        ← Total rows in output.csv
 
 ## 🎯 Split Pattern Reference
 
-**On your note:** `3-5`
+**The AI recognizes multiple formats:**
+
+| Your Note Shows | Extracted As |
+|-----------------|--------------|
+| `3-5` | V=3, F=5 |
+| `V3 F5` | V=3, F=5 |
+| `v:3 f:5` | V=3, F=5 |
+| `2/4` | V=2, F=4 |
+| `v2-v3` | V=2, F=3 |
 
 **Expected CSV:**
 ```csv
@@ -114,9 +122,9 @@ Verdivurdering,Gjennomførbarhet
 **If you see this (WRONG):**
 ```csv
 Verdivurdering,Gjennomførbarhet
-3-5,null
+v3-f5,null
 ```
-→ Check `review/` folder, verify image quality
+→ Check `review/` folder - validation caught unsplit pattern
 
 ---
 

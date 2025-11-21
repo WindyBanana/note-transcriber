@@ -612,12 +612,18 @@ def build_prompt(fields: Sequence[FieldMetadata]) -> str:
         # Special handling for split pattern fields
         if field.split_pattern and field.split_partner:
             if field.split_pattern == "x":
-                guideline += f'\n  IMPORTANT: If you see a pattern like "3-5" or "x-y" on the note, extract ONLY the FIRST number (before the dash) for this field.'
-                guideline += f'\n  The SECOND number (after the dash) goes to "{field.split_partner}"'
-                guideline += f'\n  Example: "3-5" → {field.name}=3, {field.split_partner}=5'
+                guideline += f'\n  IMPORTANT: This field is paired with "{field.split_partner}" and shares a single value on the note.'
+                guideline += f'\n  Extract ONLY the FIRST number and put it in this field.'
+                guideline += f'\n  Common formats you might see:'
+                guideline += f'\n    • "3-5" → {field.name}=3, {field.split_partner}=5'
+                guideline += f'\n    • "V3 F5" or "v3 f5" → {field.name}=3, {field.split_partner}=5'
+                guideline += f'\n    • "v:3 f:5" or "V:3 F:5" → {field.name}=3, {field.split_partner}=5'
+                guideline += f'\n    • "2/4" → {field.name}=2, {field.split_partner}=4'
+                guideline += f'\n    • "v2-v3" → {field.name}=2, {field.split_partner}=3'
+                guideline += f'\n  Look for TWO numbers on the note and extract the FIRST one here.'
             elif field.split_pattern == "y":
-                guideline += f'\n  IMPORTANT: Extract the SECOND number (after the dash) from the "x-y" pattern.'
-                guideline += f'\n  Example: "3-5" → {field.split_partner}=3, {field.name}=5'
+                guideline += f'\n  IMPORTANT: Extract the SECOND number from the paired value.'
+                guideline += f'\n  This is paired with "{field.split_partner}" - extract the second/right number.'
         elif field.pattern:
             guideline += f"\n  Expected format: {field.pattern}"
 
@@ -632,10 +638,15 @@ def build_prompt(fields: Sequence[FieldMetadata]) -> str:
     if split_pairs:
         split_note = "\n\n⚠️ CRITICAL SPLIT PATTERN RULE:\n"
         for first_field, second_field in split_pairs:
-            split_note += f'When you see a value like "3-5" or "x-y" on the note:\n'
-            split_note += f'  - Extract the FIRST number (before dash) → "{first_field}"\n'
-            split_note += f'  - Extract the SECOND number (after dash) → "{second_field}"\n'
-            split_note += f'  - Do NOT put "3-5" in both fields - split them!\n'
+            split_note += f'The note will show TWO numbers representing "{first_field}" and "{second_field}".\n'
+            split_note += f'These can be written in VARIOUS formats:\n'
+            split_note += f'  • "3-5" → {first_field}=3, {second_field}=5\n'
+            split_note += f'  • "V3 F5" or "v3 f5" → {first_field}=3, {second_field}=5\n'
+            split_note += f'  • "v:3 f:5" → {first_field}=3, {second_field}=5\n'
+            split_note += f'  • "2/4" → {first_field}=2, {second_field}=4\n'
+            split_note += f'  • "v2-v3" → {first_field}=2, {second_field}=3\n'
+            split_note += f'\nALWAYS split into separate values - NEVER put the entire string in one field!\n'
+            split_note += f'If you see "V:3 F:5", output: {first_field}=3, {second_field}=5 (NOT {first_field}="V:3 F:5")\n'
         guidelines_text += split_note
 
     # Example field structure
@@ -855,12 +866,29 @@ def validate_extraction(
                     val1 = note.get(field_name)
                     val2 = note.get(partner_name) if partner_name else None
 
-                    # Check if split was applied (both should be single numbers, not "x-y")
-                    if val1 and isinstance(val1, str) and "-" in val1:
-                        result.warnings.append(
-                            f"{image_path.name} note #{note_idx}: '{field_name}' contains '{val1}' (expected split into {field_name}={val1.split('-')[0]}, {partner_name}={val1.split('-')[1]})"
-                        )
-                        result.should_review = True
+                    # Check if split was applied (both should be single numbers, not compound patterns)
+                    if val1 and isinstance(val1, str):
+                        # Check for various unsplit patterns
+                        suspicious_patterns = [
+                            "-",           # "3-5"
+                            "/",           # "3/5"
+                            " ",           # "3 5" or "V3 F5"
+                            ":",           # "v:3 f:5"
+                            "v",           # "v2-v3" or "V3"
+                            "V",           # "V3 F5"
+                            "f",           # "f5"
+                            "F",           # "F5"
+                        ]
+
+                        has_suspicious = any(p in val1.lower() for p in suspicious_patterns)
+                        # But allow if it's just a single digit/number
+                        is_simple_number = val1.strip().isdigit()
+
+                        if has_suspicious and not is_simple_number:
+                            result.warnings.append(
+                                f"{image_path.name} note #{note_idx}: '{field_name}' contains '{val1}' (looks like unsplit pattern - should be two separate numbers)"
+                            )
+                            result.should_review = True
 
                     # Check if both fields are populated
                     if not val1 or not val2:

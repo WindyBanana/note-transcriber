@@ -114,13 +114,63 @@ Second field (number after dash): 6
 
 ## Supported Formats
 
-The AI will recognize various notation styles:
-- `3-5` (standard)
-- `3 - 5` (with spaces)
-- `3/5` (slash separator) - *may work, test recommended*
-- `3,5` (comma) - *may work, test recommended*
+The AI is trained to recognize **multiple real-world notation styles** that people actually use:
 
-**Recommended:** Use the standard dash format `x-y` for best results.
+### Common Formats (All Supported)
+
+| Format | Example | Extracted As | Notes |
+|--------|---------|--------------|-------|
+| **Dash** | `3-5` | V=3, F=5 | Most common, recommended |
+| **Slash** | `3/5` | V=3, F=5 | Alternative separator |
+| **Space** | `V3 F5` | V=3, F=5 | With field indicators |
+| **Lowercase** | `v3 f5` | V=3, F=5 | Case insensitive |
+| **Colon** | `v:3 f:5` | V=3, F=5 | Field:value format |
+| **Uppercase** | `V:3 F:5` | V=3, F=5 | Field:value format |
+| **Prefix dash** | `v2-v3` | V=2, F=3 | With repeated prefix |
+
+### How It Works
+
+The AI prompt includes examples of all these formats, so Claude understands:
+- Look for **two numbers** somewhere on the note
+- They might have letters (v, f, V, F) as indicators
+- They might be separated by dash, slash, space, or colon
+- Extract just the numbers and put them in separate fields
+
+### Real-World Examples
+
+**Note 1:**
+```
+Bedrift: Acme
+New CRM
+Risk: Low
+v3-f5          ← AI extracts: V=3, F=5
+```
+
+**Note 2:**
+```
+Company: Beta
+API Integration
+V:4 F:2        ← AI extracts: V=4, F=2
+```
+
+**Note 3:**
+```
+Customer: Gamma
+Cloud migration
+2/3            ← AI extracts: V=2, F=3
+```
+
+All work! The AI is flexible enough to handle human handwriting variations.
+
+### What If Format Isn't Recognized?
+
+The validation system will catch it:
+```
+⚠ sticky_005.jpg note #2: 'Verdivurdering' contains 'v3-f5'
+   (looks like unsplit pattern - should be two separate numbers)
+```
+
+Image goes to `review/` folder for manual inspection.
 
 ## Field Requirements
 
