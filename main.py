@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ from dotenv import load_dotenv
 from PIL import Image, UnidentifiedImageError
 from tqdm import tqdm
 from rich.console import Console
+from rich.prompt import Prompt
 from rich.table import Table
 
 import config
@@ -166,6 +168,7 @@ class FieldMetadata:
     required: bool = False
     split_pattern: str | None = None  # e.g., "x" for first part of "x-y" split
     split_partner: str | None = None  # Name of the partner field in split pattern
+    constant_value: str | None = None  # Fixed value to apply to all notes (not extracted from image)
 
     def to_prompt_description(self) -> str:
         """Generate AI prompt description for this field."""
@@ -530,6 +533,37 @@ def configure_fields_auto(columns: list[str]) -> list[FieldMetadata]:
 
     console.print(table)
 
+    # Ask about constant values for fields
+    # Identify extractable fields (description and split pattern fields)
+    extractable_keywords = ["beskrivelse", "description", "verdivurdering", "verdi", "gjennomførbarhet", "feasibility"]
+    extractable_fields = [f for f in fields if any(keyword in f.name.lower() for keyword in extractable_keywords) or f.split_pattern]
+    constant_fields = [f for f in fields if f not in extractable_fields]
+
+    if constant_fields:
+        console.print(f"\n[bold yellow]💡 Constant Fields Detected:[/bold yellow]")
+        console.print(f"  The following fields will have the same value for all notes:")
+        for cf in constant_fields:
+            console.print(f"    • [cyan]{cf.name}[/cyan]")
+
+        console.print(f"\n  You can set these values once here instead of writing them on every note.")
+        console.print(f"  (Leave empty to extract from notes instead)")
+
+        for cf in constant_fields:
+            response = Prompt.ask(
+                f"  Value for '{cf.name}'",
+                default=""
+            )
+            if response.strip():
+                cf.constant_value = response.strip()
+
+        # Show summary
+        filled_constants = [f for f in constant_fields if f.constant_value]
+        if filled_constants:
+            console.print(f"\n  [green]✓ Constant values configured:[/green]")
+            for cf in filled_constants:
+                console.print(f"    • {cf.name} = {cf.constant_value}")
+            console.print(f"  [dim]  (AI will only extract: {', '.join(f.name for f in extractable_fields)})[/dim]")
+
     return fields
 
 
@@ -601,18 +635,21 @@ def validate_image(image_path: Path) -> None:
 
 def build_prompt(fields: Sequence[FieldMetadata]) -> str:
     """Build AI prompt with field metadata."""
+    # Filter out constant fields (they won't be extracted from images)
+    extractable_fields = [f for f in fields if not f.constant_value]
+
     # Column listing
-    template_listing = "\n".join(f"- {field.name}" for field in fields)
+    template_listing = "\n".join(f"- {field.name}" for field in extractable_fields)
 
     # Check for split patterns
     split_pairs = []
-    for field in fields:
+    for field in extractable_fields:
         if field.split_pattern == "x" and field.split_partner:
             split_pairs.append((field.name, field.split_partner))
 
     # Detailed field guidelines
     field_guidelines = []
-    for field in fields:
+    for field in extractable_fields:
         guideline = f'• "{field.name}"'
         if field.description:
             guideline += f" - {field.description}"
@@ -659,7 +696,7 @@ def build_prompt(fields: Sequence[FieldMetadata]) -> str:
 
     # Example field structure
     field_examples = []
-    for field in fields:
+    for field in extractable_fields:
         if field.split_pattern == "x":
             example_value = "3"  # First number from split
         elif field.split_pattern == "y":
@@ -694,13 +731,70 @@ def guess_media_type(path: Path) -> str:
     return "application/octet-stream"
 
 
+def compress_image_if_needed(image_path: Path) -> tuple[bytes, str]:
+    """Compress/resize image if it exceeds size limits. Returns (image_bytes, media_type)."""
+    # PDFs are handled as-is
+    if image_path.suffix.lower() == ".pdf":
+        return image_path.read_bytes(), "application/pdf"
+
+    # Check original file size
+    original_size_mb = image_path.stat().st_size / (1024 * 1024)
+
+    # If already small enough, return as-is
+    if original_size_mb <= config.MAX_IMAGE_SIZE_MB:
+        media_type = guess_media_type(image_path)
+        return image_path.read_bytes(), media_type
+
+    # Need to compress
+    logging.info(f"{image_path.name}: Original size {original_size_mb:.2f}MB, compressing...")
+
+    with Image.open(image_path) as img:
+        # Convert to RGB if necessary (for PNG with alpha, etc.)
+        if img.mode in ("RGBA", "P", "LA"):
+            rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            rgb_img.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
+            img = rgb_img
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Resize if dimensions too large
+        width, height = img.size
+        if width > config.MAX_IMAGE_DIMENSION or height > config.MAX_IMAGE_DIMENSION:
+            ratio = min(config.MAX_IMAGE_DIMENSION / width, config.MAX_IMAGE_DIMENSION / height)
+            new_size = (int(width * ratio), int(height * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            logging.info(f"{image_path.name}: Resized from {width}x{height} to {new_size[0]}x{new_size[1]}")
+
+        # Compress to JPEG
+        output = io.BytesIO()
+        quality = config.JPEG_QUALITY
+
+        # Try progressively lower quality until under size limit
+        while quality >= 50:
+            output.seek(0)
+            output.truncate()
+            img.save(output, format="JPEG", quality=quality, optimize=True)
+            compressed_size_mb = output.tell() / (1024 * 1024)
+
+            if compressed_size_mb <= config.MAX_IMAGE_SIZE_MB:
+                logging.info(f"{image_path.name}: Compressed to {compressed_size_mb:.2f}MB (quality={quality})")
+                return output.getvalue(), "image/jpeg"
+
+            quality -= 10
+
+        # If still too large, return best effort
+        logging.warning(f"{image_path.name}: Still {compressed_size_mb:.2f}MB after compression, sending anyway")
+        return output.getvalue(), "image/jpeg"
+
+
 def call_model_api(
     provider: ProviderClient, image_path: Path, fields: Sequence[FieldMetadata]
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     prompt = build_prompt(fields)
-    image_bytes = image_path.read_bytes()
+    image_bytes, media_type = compress_image_if_needed(image_path)
     encoded_image = base64.b64encode(image_bytes).decode("utf-8")
-    media_type = guess_media_type(image_path)
     if provider.name == "anthropic":
         return call_anthropic_api(provider, prompt, encoded_image, media_type, image_path)
     return call_openai_api(provider, prompt, encoded_image, media_type, image_path)
@@ -814,16 +908,21 @@ def extract_openai_text(response: Any) -> str:
 
 
 def normalize_notes(
-    notes: list[dict[str, Any]], template_columns: Sequence[str]
+    notes: list[dict[str, Any]], fields: Sequence[FieldMetadata]
 ) -> list[dict[str, Any]]:
+    """Normalize notes by applying constant values and ensuring all fields are present."""
     normalized: list[dict[str, Any]] = []
     for index, raw_note in enumerate(notes, start=1):
         note_number = raw_note.get("note_number", index)
         row: dict[str, Any] = {
             "note_number": note_number,
         }
-        for column in template_columns:
-            row[column] = raw_note.get(column)
+        for field in fields:
+            # Use constant value if set, otherwise use extracted value
+            if field.constant_value:
+                row[field.name] = field.constant_value
+            else:
+                row[field.name] = raw_note.get(field.name)
         normalized.append(row)
     return normalized
 
@@ -987,7 +1086,7 @@ def process_images(
                 stats.add_warning(warning)
 
             # Write extracted data to CSV
-            normalized = normalize_notes(notes, template_columns)
+            normalized = normalize_notes(notes, fields)
             if len(normalized) > 0:  # Only write if we got some data
                 append_rows_to_csv(normalized, template_columns, image_path.name)
 

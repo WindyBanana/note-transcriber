@@ -47,3 +47,8 @@ SUPPORTED_EXTENSIONS: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".pdf")
 ESTIMATED_COST_PER_IMAGE: float = 0.02
 INPUT_TOKEN_COST_PER_1K: float = 0.003  # USD per 1K input tokens (estimate)
 OUTPUT_TOKEN_COST_PER_1K: float = 0.015  # USD per 1K output tokens (estimate)
+
+# Image compression settings
+MAX_IMAGE_SIZE_MB: float = 2.5  # Max size in MB before base64 encoding (Claude limit ~5MB after encoding)
+MAX_IMAGE_DIMENSION: int = 2560  # Max width/height in pixels (balances quality and size)
+JPEG_QUALITY: int = 90  # JPEG compression quality (1-100) - higher preserves text better
